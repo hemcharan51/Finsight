@@ -33,9 +33,15 @@ class Settings(BaseSettings):
     )
 
     # --- LLM ---------------------------------------------------------------
+    llm_provider: str = "anthropic"  # "anthropic" | "openai"
     anthropic_api_key: str = ""
+    openai_api_key: str = ""
+    # Anthropic model routing.
     model_small: str = "claude-haiku-4-5-20251001"
     model_large: str = "claude-opus-4-8"
+    # OpenAI model routing (used when llm_provider == "openai").
+    openai_model_small: str = "gpt-4o-mini"
+    openai_model_large: str = "gpt-4o-mini"
     mock_llm: bool = False
 
     # --- Grid fan-out (Layer 07: the D×C cost tax) -------------------------
@@ -53,14 +59,23 @@ class Settings(BaseSettings):
     data_dir: Path = PROJECT_ROOT / "data"
 
     @property
+    def provider(self) -> str:
+        """Normalised LLM provider name."""
+        return (self.llm_provider or "anthropic").strip().lower()
+
+    @property
     def use_live_llm(self) -> bool:
-        """True only when we have a key and have not been forced into mock mode."""
-        # The Claude Code gateway also injects ANTHROPIC_BASE_URL; a key is still
-        # required for the anthropic SDK to authenticate.
+        """True only when we have a key for the active provider and have not been
+        forced into mock mode."""
         import os
 
-        key = self.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", "")
-        return bool(key) and not self.mock_llm
+        if self.mock_llm:
+            return False
+        if self.provider == "openai":
+            return bool(self.openai_api_key or os.environ.get("OPENAI_API_KEY", ""))
+        # The Claude Code gateway also injects ANTHROPIC_BASE_URL; a key is still
+        # required for the anthropic SDK to authenticate.
+        return bool(self.anthropic_api_key or os.environ.get("ANTHROPIC_API_KEY", ""))
 
     # --- Optional dependency capability flags ------------------------------
     @property

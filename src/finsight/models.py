@@ -75,6 +75,10 @@ class Cell(BaseModel):
             return f"{self.value:,.2f}".rstrip("0").rstrip(".")
         return str(self.value)
 
+    @property
+    def key(self) -> tuple[str, str]:
+        return (self.doc_id, self.column_id)
+
 
 def _fmt_money(v: float) -> str:
     sign = "-" if v < 0 else ""
@@ -86,10 +90,6 @@ def _fmt_money(v: float) -> str:
     if a >= 1e3:
         return f"{sign}${a / 1e3:,.0f}K"
     return f"{sign}${a:,.0f}"
-
-    @property
-    def key(self) -> tuple[str, str]:
-        return (self.doc_id, self.column_id)
 
 
 # --- The plan (output of Layer 5 decomposition) ----------------------------

@@ -1,5 +1,9 @@
 # FinSight v2.0 — Grid-Native Agentic Analysis for Structured Financial Documents
 
+[![CI](https://github.com/hemcharan51/Finsight/actions/workflows/ci.yml/badge.svg)](https://github.com/hemcharan51/Finsight/actions/workflows/ci.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 > *"A grid in the shape of Hebbia, with FinSight's deterministic core intact."*
 
 FinSight v2.0 answers analytical questions that span **many** financial filings by
@@ -18,6 +22,8 @@ Query → Decompose → Fan-out (parallel cells) → Verify → Synthesize
         rows=docs    each cell scoped to        cross-cell    grid +
         cols=q's     one document               checks        cited answer
 ```
+
+![Query-to-answer architecture](docs/architecture_query_to_answer.svg)
 
 ---
 

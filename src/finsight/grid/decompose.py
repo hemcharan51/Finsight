@@ -13,7 +13,6 @@ without a net-income column and a revenue column in the grid).
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 
 from finsight.ingestion import ParsedDocument

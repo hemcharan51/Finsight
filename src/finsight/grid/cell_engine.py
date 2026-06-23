@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from pydantic import BaseModel
-from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 from finsight.calc import CalcError, compute, supported_formulas
 from finsight.cache import CellCache
@@ -53,6 +53,32 @@ class CellContext:
 
 class _TransientCellError(Exception):
     """Retryable failure inside a cell (e.g. a flaky model call)."""
+
+
+# Anthropic SDK error classes that represent *transient* failures worth retrying.
+# Matched by class name so this module keeps no hard dependency on `anthropic`
+# (offline/mock mode must import with the SDK absent).
+_RETRYABLE_API_ERRORS = {
+    "RateLimitError",        # 429
+    "APITimeoutError",
+    "APIConnectionError",
+    "InternalServerError",   # 500
+    "OverloadedError",       # 529
+    "APIStatusError",        # generic — gated on status_code below
+}
+
+
+def _is_retryable(exc: BaseException) -> bool:
+    """Retry our own transient marker plus 429/5xx API errors — but never 4xx
+    client errors (bad request, auth), which retrying cannot fix."""
+    if isinstance(exc, _TransientCellError):
+        return True
+    if exc.__class__.__name__ in _RETRYABLE_API_ERRORS:
+        status = getattr(exc, "status_code", None)
+        if status is None:
+            return True
+        return status == 429 or status >= 500
+    return False
 
 
 class CellEngine:
@@ -101,7 +127,7 @@ class CellEngine:
             async for attempt in AsyncRetrying(
                 stop=stop_after_attempt(self.settings.cell_max_retries),
                 wait=wait_exponential(multiplier=0.2, max=2.0),
-                retry=retry_if_exception_type(_TransientCellError),
+                retry=retry_if_exception(_is_retryable),
                 reraise=True,
             ):
                 with attempt:
@@ -152,7 +178,9 @@ class CellEngine:
                     unit="USD",
                     detail=raw,
                     source=self._source(doc_id, hit.chunk),
-                    confidence=0.8 * (hit.score and 1.0 or 1.0),
+                    # Confidence reflects the retrieval score of the span the figure
+                    # came from, floored so any successful extract stays trusted.
+                    confidence=min(0.95, 0.6 + max(0.0, hit.score)),
                     path="retrieval_extract",
                 )
         # A missing figure is returned EMPTY and flagged — never invented (§05).
@@ -201,13 +229,24 @@ class CellEngine:
         if not col.formula or col.formula not in [*supported_formulas(), *_aliases()]:
             return Cell(doc_id=doc_id, column_id=col.column_id, question=col.question, status="failed", path="compute", error=f"unsupported formula '{col.formula}'")
 
+        # The calc engine expects specific parameter names. For most ratios the
+        # dependency column ids already match (net_income, revenue, ...). For
+        # positional formulas (cagr -> begin/end/years, yoy_growth -> current/prior)
+        # the column ids are arbitrary, so map them by position onto the formula's
+        # declared inputs.
+        params = _formula_inputs(col.formula)
         inputs: dict[str, object] = {}
         missing: list[str] = []
-        for dep in col.depends_on:
+        for pos, dep in enumerate(col.depends_on):
             dep_cell = grid.get(doc_id, dep)
             if dep_cell.status == "done" and isinstance(dep_cell.value, (int, float)):
-                # Map the dependency column id to the formula's parameter name.
-                inputs[_param_for(col.formula, dep)] = float(dep_cell.value)
+                if dep in params:
+                    param = dep
+                elif pos < len(params):
+                    param = params[pos]
+                else:
+                    param = dep
+                inputs[param] = float(dep_cell.value)
             else:
                 missing.append(dep)
 
@@ -256,14 +295,12 @@ class CellEngine:
         )
 
 
-# Parameter-name mapping: a ratio column depends on metric columns (e.g.
-# net_income, revenue); the calc engine expects those exact parameter names, with a
-# couple of formula-specific renames (yoy_growth/cagr use generic begin/end).
-_RENAME: dict[tuple[str, str], str] = {}
+def _formula_inputs(formula: str) -> tuple[str, ...]:
+    """The ordered parameter names a formula expects, resolving aliases."""
+    from finsight.calc import FORMULAS
 
-
-def _param_for(formula: str, dep_column: str) -> str:
-    return _RENAME.get((formula, dep_column), dep_column)
+    spec = FORMULAS.get(formula) or FORMULAS.get((formula or "").lower())
+    return spec.inputs if spec else ()
 
 
 def _aliases() -> list[str]:

@@ -2,7 +2,6 @@
 
 import math
 
-import pytest
 
 from conftest import ACME, BETA, GAMMA
 

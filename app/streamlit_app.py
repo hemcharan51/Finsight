@@ -10,17 +10,18 @@ Install UI extra first:  pip install -e ".[ui]"
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import tempfile
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from finsight.grid.store import grid_to_dataframe
 from finsight.models import Grid
 from finsight.pipeline import FinSight
 
 try:
-    from st_aggrid import AgGrid, GridOptionsBuilder, JsCode
+    from st_aggrid import AgGrid, GridOptionsBuilder
 
     HAS_AGGRID = True
 except Exception:  # pragma: no cover - optional dependency
@@ -35,9 +36,36 @@ ROUTE_COLORS = {
 st.set_page_config(page_title="FinSight v2.0 — Grid", layout="wide")
 
 
+_UPLOAD_TYPES = ["txt", "md", "markdown", "csv", "pdf", "docx", "xlsx"]
+
+
 @st.cache_resource(show_spinner="Building corpus (ingest · chunk · numeric store · index)…")
 def build_corpus(data_dir: str) -> FinSight:
     return FinSight.from_path(data_dir)
+
+
+def _uploads_signature(files) -> str:
+    """Content hash over the uploaded files — changes whenever any byte changes,
+    so re-uploading a same-named file with new numbers busts the cell cache
+    (cells are keyed on doc_id = hash(filename), not on document content)."""
+    h = hashlib.sha256()
+    for f in sorted(files, key=lambda x: x.name):
+        h.update(f.name.encode())
+        h.update(f.getvalue())
+    return h.hexdigest()[:12]
+
+
+@st.cache_resource(show_spinner="Building corpus from uploads (ingest · chunk · numeric store · index)…")
+def build_corpus_from_uploads(signature: str, _payload: tuple) -> FinSight:
+    """`signature` is the cache key (Streamlit ignores the underscored payload).
+
+    Uploaded files are written to a per-signature temp directory, and the cell
+    cache is namespaced to the same signature so different content never collides
+    with a stale cached answer."""
+    tmp = Path(tempfile.mkdtemp(prefix=f"finsight_upload_{signature}_"))
+    for name, data in _payload:
+        (tmp / Path(name).name).write_bytes(data)
+    return FinSight.from_path(str(tmp), cache_namespace=f"upload-{signature}")
 
 
 def render_aggrid(grid: Grid) -> None:
@@ -50,26 +78,9 @@ def render_aggrid(grid: Grid) -> None:
         matrix[row.doc_id] = rec
     df = pd.DataFrame(list(matrix.values()))
 
-    # Per-cell route → left-border colour, mirroring the doc's worked fragment.
-    route_lookup = {
-        (row.title or row.doc_id, col.name): grid.get(row.doc_id, col.column_id).path
-        for row in grid.rows
-        for col in grid.columns
-    }
-
     gb = GridOptionsBuilder.from_dataframe(df)
     gb.configure_default_column(resizable=True, wrapText=True, autoHeight=True)
     gb.configure_selection("single")
-    style = JsCode(
-        """
-        function(params) {
-            const colors = %s;
-            // colour lookup is approximate in JS; styling handled in Python summary below.
-            return {};
-        }
-        """
-        % ROUTE_COLORS
-    )
     grid_options = gb.build()
     AgGrid(df, gridOptions=grid_options, allow_unsafe_jscode=True, fit_columns_on_grid_load=True, height=260)
 
@@ -125,8 +136,24 @@ def main() -> None:
 
     with st.sidebar:
         st.header("Corpus")
-        data_dir = st.text_input("Data directory", value="data/demo")
-        corpus = build_corpus(data_dir)
+        uploaded = st.file_uploader(
+            "Upload filings",
+            type=_UPLOAD_TYPES,
+            accept_multiple_files=True,
+            help="txt / csv work out of the box. pdf / docx / xlsx need the "
+            "[ingest] extra: pip install -e \".[ingest]\".",
+        )
+        data_dir = st.text_input("…or load a folder", value="data/demo")
+
+        if uploaded:
+            signature = _uploads_signature(uploaded)
+            payload = tuple((f.name, f.getvalue()) for f in uploaded)
+            corpus = build_corpus_from_uploads(signature, payload)
+            st.caption(f"Loaded {len(uploaded)} uploaded file(s).")
+        else:
+            corpus = build_corpus(data_dir)
+            st.caption(f"Loaded from folder: {data_dir}")
+
         info = corpus.info()
         st.json(info)
         st.markdown(
